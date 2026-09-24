@@ -1,0 +1,129 @@
+# Render.com config — Free tier (no DB/Redis aquí, usa Supabase + Upstash externo)
+#
+# Use: en Render dashboard, "New + Blueprint" y conecta tu fork del repo.
+# Render detecta este render.yaml y crea 2 servicios automáticamente.
+#
+# Costo Free tier: $0/mes total
+#   - api: 512MB RAM, sleep after 15min idle (auto-deploy en push)
+#   - worker: 512MB RAM, sleep after 15min idle (worker también duerme con Free Web Service)
+#
+# Para que el API no duerma: usar UptimeRobot ping cada 10 min a /health (gratis)
+
+services:
+  - type: web
+    name: autotaxflow-api
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    repo: https://github.com/alicelabs-llc/autotaxflow
+    buildCommand: npm install && npx prisma generate --schema packages/db/prisma/schema.prisma && npx tsc -p apps/api/tsconfig.json
+    startCommand: node apps/api/dist/index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      # Estos deben setearse manualmente desde el dashboard o via `render env set`
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        value: 6379
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: TOKEN_ENC_KEY
+        sync: false
+      - key: WEB_ORIGIN
+        value: https://atf.alicelabs.site
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_BILLING_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_STARTER
+        sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: STRIPE_PRICE_BUSINESS
+        sync: false
+      - key: STRIPE_PRICE_CPA_PARTNER
+        sync: false
+      - key: QBO_CLIENT_ID
+        sync: false
+      - key: QBO_CLIENT_SECRET
+        sync: false
+      - key: QBO_ENVIRONMENT
+        value: sandbox
+      - key: QBO_REDIRECT_URI
+        value: https://autotaxflow-api.onrender.com/api/integrations/qbo/callback
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: WOOCOMMERCE_API_SECRET
+        sync: false
+      - key: BIGCOMMERCE_STORE_HASH
+        sync: false
+      - key: BIGCOMMERCE_CLIENT_SECRET
+        sync: false
+      - key: OIDC_ISSUER
+        sync: false
+      - key: OIDC_CLIENT_ID
+        sync: false
+      - key: OIDC_CLIENT_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: alerts@alicelabs.site
+      - key: EMAIL_FROM_NAME
+        value: AutoTaxFlow Alerts
+      - key: APP_BASE_URL
+        value: https://atf.alicelabs.site
+      - key: SENTRY_DSN
+        sync: false
+
+  - type: web  # Render Free no tiene "worker" tipo, se usa web sin http health check
+    name: autotaxflow-worker
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    repo: https://github.com/alicelabs-llc/autotaxflow
+    buildCommand: npm install && npx prisma generate --schema packages/db/prisma/schema.prisma && npx tsc -p apps/worker/tsconfig.json
+    startCommand: node apps/worker/dist/index.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        value: 6379
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: TOKEN_ENC_KEY
+        sync: false
+      - key: QBO_ENVIRONMENT
+        value: sandbox
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: alerts@alicelabs.site
+      - key: EMAIL_FROM_NAME
+        value: AutoTaxFlow Alerts
+      - key: APP_BASE_URL
+        value: https://atf.alicelabs.site
+      - key: SENTRY_DSN
+        sync: false
+
+# NOTA: Para acceder a Upstash Redis desde Render, los host/port/password deben
+# setearse como env vars con sync:false (es decir, manualmente en el dashboard).
+# Render no soporta "databases" en el free plan — externamente Supabase + Upstash.

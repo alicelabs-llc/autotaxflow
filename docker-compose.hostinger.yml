@@ -1,0 +1,126 @@
+# AutoTaxFlow — Hostinger VPS compose (1 single VM, all services inside)
+#
+# Use:
+#   scp -r . env.example deploy/ root@VPS_IP:/opt/autotaxflow/
+#   ssh root@VPS_IP
+#   cd /opt/autotaxflow
+#   cp .env.example .env && nano .env    # fill secrets
+#   docker compose -f docker-compose.hostinger.yml up -d --build
+#   docker compose -f docker-compose.hostinger.yml exec api npx prisma db push --schema packages/db/prisma/schema.prisma
+#
+# Specs:
+#   Hostinger KVM 1 (1 vCPU, 4GB RAM, 50GB NVMe) — sufficient for MVP
+#   Or KVM 2 (2 vCPU, 8GB RAM) for production with 50+ customers
+#
+# Services exposed on host:
+#   - api:  127.0.0.1:3001 (proxied to https://api.atf.alicelabs.site via nginx)
+#   - web:  127.0.0.1:3000 (proxied to https://atf.alicelabs.site via nginx)
+#   - postgres: 127.0.0.1:5432 (not public)
+#   - redis:    127.0.0.1:6379 (not public)
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: atf_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-atf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-autotaxflow}
+    ports:
+      - '127.0.0.1:5432:5432'  # bind to localhost only — no public exposure
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-atf}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: atf_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    ports:
+      - '127.0.0.1:6379:6379'  # localhost only
+    volumes:
+      - redis_data:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: atf_api
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autotaxflow}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - '127.0.0.1:3001:3001'
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: atf_worker
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autotaxflow}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: atf_web
+    restart: always
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      API_URL: http://api:3001   # internal docker network — for SSR fetches
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.atf.alicelabs.site}  # client-side fetches
+    ports:
+      - '127.0.0.1:3000:3000'
+    logging:
+      driver: json-file
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+volumes:
+  postgres_data:
+  redis_data:

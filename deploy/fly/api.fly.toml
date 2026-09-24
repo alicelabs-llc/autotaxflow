@@ -1,0 +1,45 @@
+# Fly.io config for AutoTaxFlow API
+# Deploy: fly deploy --config deploy/fly/api.fly.toml
+primary_region = 'iad'
+
+[build]
+  dockerfile = "apps/api/Dockerfile"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = false  # workers need always-on
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/health"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3001"
+
+[[vm]]
+  size = "shared-cpu-1x"  # 256MB — enough for MVP. Upgrade to 1x-2x for scale.
+  memory = "512mb"
+
+# Secrets — set with `fly secrets set -a autotaxflow-api JWT_SECRET=...` etc.
+# Required secrets:
+#   DATABASE_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
+#   JWT_SECRET, TOKEN_ENC_KEY, WEB_ORIGIN,
+#   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_BILLING_WEBHOOK_SECRET,
+#   STRIPE_PRICE_STARTER, STRIPE_PRICE_PRO, STRIPE_PRICE_BUSINESS, STRIPE_PRICE_CPA_PARTNER,
+#   QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI,
+#   SHOPIFY_API_SECRET, WOOCOMMERCE_API_SECRET, BIGCOMMERCE_STORE_HASH, BIGCOMMERCE_CLIENT_SECRET,
+#   OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
+#   RESEND_API_KEY, EMAIL_FROM, EMAIL_FROM_NAME, APP_BASE_URL,
+#   SENTRY_DSN

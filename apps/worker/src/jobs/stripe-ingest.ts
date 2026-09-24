@@ -1,108 +1,208 @@
-import { prisma } from "@autotaxflow/db";
-import Stripe from "stripe";
-
-interface StripeIngestData {
-    provider: "STRIPE";
-    eventId: string;
-    payload: Stripe.Event; // El payload crudo que guardamos en la API
-}
+import { prisma, ProviderName, TransactionType, WebhookStatus } from '@autotaxflow/db';
+import type { StripeIngestJobData } from '@autotaxflow/shared';
+import type Stripe from 'stripe';
+import { aggregateQueue } from '../lib/bullmq';
 
 /**
- * PROCESADOR DE INGESTA DE STRIPE
- * Toma un evento crudo de un webhook y decide qué hacer con él.
+ * Procesador de ingesta de Stripe.
+ *
+ * Job data: { webhookId } — solo el ID. El payload se carga desde DB.
+ * Esto evita 2 cosas:
+ *   1) Duplicar el payload en memoria Redis (que se vence con BullMQ).
+ *   2) Pérdida de eventos si Redis falla entre receive y process.
+ *
+ * Idempotencia: si el webhook ya está PROCESSED, no hace nada.
+ * El job tiene jobId=webhookId así que BullMQ no encola duplicados del mismo ID.
  */
-export async function processStripeIngest(data: StripeIngestData) {
-    const { eventId, payload } = data;
+export async function processStripeIngest(data: StripeIngestJobData) {
+  const { webhookId } = data;
 
-    try {
-        // 1. Verificar duplicidad (Idempotencia en Worker nivel DB)
-        const existing = await prisma.webhookEvent.findUnique({
-            where: { provider_eventId: { provider: "STRIPE", eventId } },
-        });
+  const webhook = await prisma.webhookEvent.findUnique({
+    where: { id: webhookId },
+  });
 
-        if (existing?.status === "PROCESSED") {
-            console.log(`⏩ Evento ${eventId} ya procesado, saltando...`);
-            return;
-        }
+  if (!webhook) {
+    throw new Error(`WebhookEvent ${webhookId} not found in DB`);
+  }
 
-        // 2. Upsert del WebhookEvent (Inicialización)
-        const webhook = await prisma.webhookEvent.upsert({
-            where: { provider_eventId: { provider: "STRIPE", eventId } },
-            create: {
-                provider: "STRIPE",
-                eventId,
-                payload: payload as any,
-                status: "PROCESSING",
-            },
-            update: { status: "PROCESSING" },
-        });
+  if (webhook.status === WebhookStatus.PROCESSED) {
+    console.log(`[ingest] webhook ${webhookId} already processed, skipping`);
+    return;
+  }
 
-        // 3. Dispatch según tipo de evento
-        switch (payload.type) {
-            case "charge.succeeded":
-                await handleChargeSucceeded(payload.data.object as Stripe.Charge, webhook.id);
-                break;
-            case "charge.refunded":
-                await handleChargeRefunded(payload.data.object as Stripe.Charge, webhook.id);
-                break;
-            default:
-                console.log(`🔘 Evento ${payload.type} ignorado (sin handler asignado)`);
-        }
+  // Marcar PROCESSING
+  await prisma.webhookEvent.update({
+    where: { id: webhookId },
+    data: { status: WebhookStatus.PROCESSING },
+  });
 
-        // 4. Marcar como finalizado
-        await prisma.webhookEvent.update({
-            where: { id: webhook.id },
-            data: { status: "PROCESSED", processedAt: new Date() },
-        });
+  try {
+    const event = webhook.payload as unknown as Stripe.Event;
 
-    } catch (err: any) {
-        console.error(`💥 Error procesando Stripe Event ${eventId}: ${err.message}`);
-        // Marcar como error para inspección manual
-        await prisma.webhookEvent.update({
-            where: { provider_eventId: { provider: "STRIPE", eventId } },
-            data: { status: "ERROR", error: err.message },
-        }).catch(() => { });
-        throw err; // Para que BullMQ lo reintente
-    }
-}
-
-/**
- * CARGO EXITOSO -> Transacción de Ingreso
- */
-async function handleChargeSucceeded(charge: Stripe.Charge, webhookId: string) {
-    const stripeAccountId = charge.on_behalf_of || charge.customer?.toString() || "UNKNOWN";
-
-    // Buscar Organización (Tenant) por External Account ID (Stripe)
-    const connectedAccount = await prisma.connectedAccount.findFirst({
-        where: { externalAccountId: stripeAccountId, provider: "STRIPE" },
-        include: { organization: true },
-    });
-
-    if (!connectedAccount) {
-        console.warn(`🛑 No se encontró Org para Stripe Account: ${stripeAccountId}`);
-        return;
+    switch (event.type) {
+      case 'charge.succeeded':
+        await handleChargeSucceeded(event);
+        break;
+      case 'charge.refunded':
+        await handleChargeRefunded(event);
+        break;
+      default:
+        console.log(`[ingest] event ${event.type} has no handler (webhook ${webhookId})`);
     }
 
-    // Insertar Transacción Normalizada
-    await prisma.transaction.create({
-        data: {
-            organizationId: connectedAccount.organizationId,
-            sourceProvider: "STRIPE",
-            sourceId: charge.id,
-            type: "CHARGE",
-            amount: charge.amount / 100, // Stripe manda en centavos
-            currency: charge.currency.toUpperCase(),
-            occurredAt: new Date(charge.created * 1000),
-            customerState: charge.billing_details?.address?.state || null,
-            customerCountry: charge.billing_details?.address?.country || null,
-            rawJson: charge as any,
-        },
+    await prisma.webhookEvent.update({
+      where: { id: webhookId },
+      data: { status: WebhookStatus.PROCESSED, processedAt: new Date() },
     });
+  } catch (err) {
+    await prisma.webhookEvent
+      .update({
+        where: { id: webhookId },
+        data: { status: WebhookStatus.ERROR, error: (err as Error).message },
+      })
+      .catch(() => {});
+    throw err; // Para que BullMQ reintente
+  }
 }
 
 /**
- * REEMBOLSO -> Transacción de Egreso (Refund)
+ * Lookup del tenant: para Connect webhooks el header `stripe-account` viene
+ * como `acct_xxx`; para platform webhooks el payload `event.account` (Connect)
+ * o usamos `charge.on_behalf_of`. Nunca `charge.customer` (es un cus_xxx).
  */
-async function handleChargeRefunded(charge: Stripe.Charge, webhookId: string) {
-    // Lógica similar para revertir montos o crear facturas negativas
+async function resolveTenant(opts: {
+  stripeAccountId?: string;
+  onBehalfOf?: string | null;
+}): Promise<{ organizationId: string } | null> {
+  const candidates = [opts.stripeAccountId, opts.onBehalfOf].filter(Boolean) as string[];
+  if (candidates.length === 0) return null;
+
+  const account = await prisma.connectedAccount.findFirst({
+    where: {
+      provider: ProviderName.STRIPE,
+      externalAccountId: { in: candidates },
+    },
+    select: { organizationId: true },
+  });
+  return account ? { organizationId: account.organizationId } : null;
+}
+
+async function handleChargeSucceeded(event: Stripe.Event) {
+  const charge = event.data.object as Stripe.Charge;
+
+  // Preferimos event.account (Connect webhook). Si no, charge.on_behalf_of.
+  const stripeAccountId =
+    (event.account as string | undefined) || (charge.on_behalf_of as string | null) || undefined;
+
+  const tenant = await resolveTenant({
+    stripeAccountId,
+    onBehalfOf: (charge.on_behalf_of as string | null) || undefined,
+  });
+  if (!tenant) {
+    console.warn(
+      `[ingest] no tenant found for stripe account ${stripeAccountId} (charge ${charge.id})`
+    );
+    return;
+  }
+
+  // Idempotency por (orgId, sourceProvider, sourceId) → upsert hace la magia.
+  const occurredAt = new Date(charge.created * 1000);
+  const address = (charge.billing_details as any)?.address as
+    | { state?: string | null; country?: string | null }
+    | null
+    | undefined;
+  const customerState = address?.state || null;
+  const customerCountry = address?.country || null;
+
+  await prisma.transaction.upsert({
+    where: {
+      organizationId_sourceProvider_sourceId: {
+        organizationId: tenant.organizationId,
+        sourceProvider: ProviderName.STRIPE,
+        sourceId: charge.id,
+      },
+    },
+    create: {
+      organizationId: tenant.organizationId,
+      sourceProvider: ProviderName.STRIPE,
+      sourceId: charge.id,
+      type: TransactionType.CHARGE,
+      amount: charge.amount / 100,
+      currency: charge.currency.toUpperCase(),
+      occurredAt,
+      customerState,
+      customerCountry,
+      rawJson: charge as unknown as object,
+    },
+    update: {}, // Ya existe — no sobrescribimos. Refunds se manejan aparte.
+  });
+
+  // Encolar agregación diaria (idempotente).
+  if (customerState) {
+    const dateStr = occurredAt.toISOString().slice(0, 10);
+    await aggregateQueue.add(
+      'aggregate.revenueDaily',
+      { organizationId: tenant.organizationId, date: dateStr, state: customerState },
+      { jobId: `${tenant.organizationId}:${dateStr}:${customerState}` }
+    );
+  }
+}
+
+async function handleChargeRefunded(event: Stripe.Event) {
+  const charge = event.data.object as Stripe.Charge;
+  const refund = (charge.refunds?.data || [])[0];
+  if (!refund) return;
+
+  const stripeAccountId =
+    (event.account as string | undefined) || (charge.on_behalf_of as string | null) || undefined;
+  const tenant = await resolveTenant({
+    stripeAccountId,
+    onBehalfOf: (charge.on_behalf_of as string | null) || undefined,
+  });
+  if (!tenant) {
+    console.warn(`[ingest] refund: no tenant for charge ${charge.id}`);
+    return;
+  }
+
+  const occurredAt = new Date(refund.created * 1000);
+  const address = (charge.billing_details as any)?.address as
+    | { state?: string | null; country?: string | null }
+    | null
+    | undefined;
+  const customerState = address?.state || null;
+  const customerCountry = address?.country || null;
+  const refundSourceId = refund.id; // re_xxx
+
+  // Insertamos la transacción REFUND (amount positivo en el payload de Stripe).
+  await prisma.transaction.upsert({
+    where: {
+      organizationId_sourceProvider_sourceId: {
+        organizationId: tenant.organizationId,
+        sourceProvider: ProviderName.STRIPE,
+        sourceId: refundSourceId,
+      },
+    },
+    create: {
+      organizationId: tenant.organizationId,
+      sourceProvider: ProviderName.STRIPE,
+      sourceId: refundSourceId,
+      type: TransactionType.REFUND,
+      amount: refund.amount / 100, // positivo en DB; la agregación lo resta de netRevenue
+      currency: charge.currency.toUpperCase(),
+      occurredAt,
+      customerState,
+      customerCountry,
+      rawJson: refund as unknown as object,
+    },
+    update: {}, // idempotencia
+  });
+
+  if (customerState) {
+    const dateStr = occurredAt.toISOString().slice(0, 10);
+    await aggregateQueue.add(
+      'aggregate.revenueDaily',
+      { organizationId: tenant.organizationId, date: dateStr, state: customerState },
+      { jobId: `${tenant.organizationId}:${dateStr}:${customerState}` }
+    );
+  }
 }

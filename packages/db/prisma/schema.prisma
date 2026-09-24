@@ -1,9 +1,7 @@
-# AutoTaxFlow - Esquema de Base de Datos (Prisma)
-
-El siguiente es el esquema completo de base de datos para tu MVP utilizando **Prisma ORM** sobre PostgreSQL. Está diseñado completamente bajo el patrón **Multi-Tenant**, asegurando que toda la información transaccional pertenece a una `Organization`.
-
-```prisma
-// schema.prisma
+// AutoTaxFlow - Prisma Schema (PostgreSQL)
+// Multi-tenant SaaS for state-level revenue aggregation & sales-tax nexus detection.
+// All business entities carry organizationId with onDelete: Cascade to guarantee
+// tenant isolation. WebhookEvent uses @@unique([provider, eventId]) for idempotency.
 
 generator client {
   provider = "prisma-client-js"
@@ -23,19 +21,21 @@ model Organization {
   name          String
   country       String
   baseCurrency  String   @default("USD")
+  tier          Tier     @default(FREE)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   memberships       Membership[]
   auditLogs         AuditLog[]
   connectedAccounts ConnectedAccount[]
-  
+  subscriptions     Subscription[]
+
   // Relaciones Financieras
   transactions      Transaction[]
   payouts           Payout[]
   expenses          Expense[]
   accounts          Account[]
-  
+
   // Analítica & Reglas
   monthlyRevenue    StateRevenueMonthly[]
   dailyRevenue      StateRevenueDaily[]
@@ -43,14 +43,54 @@ model Organization {
   anomalies         Anomaly[]
   rulesets          Ruleset[]
   reports           Report[]
+  exemptions        ExemptionCertificate[]
+  stateRegistrations StateRegistration[]
+  vatRegistrations  VatRegistration[]
+
+  @@index([tier])
+}
+
+enum Tier {
+  FREE          // monitoring only, no reports/QBO/CPA
+  STARTER       // $79/mo — 1 Stripe, CSV export, 3 nexus rules
+  PRO           // $149/mo — +QBO sync, PDF reports, expense categorization, 10 rules
+  BUSINESS      // $299/mo — Multi-Stripe, 5 users, CPA role, API access
+  CPA_PARTNER   // $49/org — Read-only for CPA firms
+}
+
+model Subscription {
+  id                    String              @id @default(uuid())
+  organizationId        String
+  stripeCustomerId      String?
+  stripeSubscriptionId  String?             @unique
+  tier                  Tier
+  status                SubscriptionStatus @default(TRIALING)
+  currentPeriodStart    DateTime?
+  currentPeriodEnd      DateTime?
+  cancelAt              DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  organization          Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String   @id @default(uuid())
+  email           String   @unique
+  name            String?
+  passwordHash    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   memberships Membership[]
   auditLogs   AuditLog[]
@@ -65,30 +105,33 @@ enum Role {
 }
 
 model Membership {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   userId         String
-  role           Role         @default(VIEWER)
-  createdAt      DateTime     @default(now())
+  role            Role     @default(VIEWER)
+  createdAt       DateTime @default(now())
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, userId])
+  @@index([userId])
 }
 
 model AuditLog {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   userId         String?
   action         String
   entity         String
   entityId       String?
   details        Json?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime @default(now())
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
 }
 
 // ---------------------------------------------------------
@@ -98,6 +141,9 @@ model AuditLog {
 enum ProviderName {
   STRIPE
   QUICKBOOKS
+  SHOPIFY
+  WOOCOMMERCE
+  BIGCOMMERCE
 }
 
 enum ConnectionStatus {
@@ -111,39 +157,62 @@ model ConnectedAccount {
   organizationId    String
   provider          ProviderName
   status            ConnectionStatus @default(CONNECTED)
-  externalAccountId String           // ej: acct_1234 (Stripe) o realmId (QBO)
+  externalAccountId String // ej: acct_1234 (Stripe) o realmId (QBO)
   lastSyncAt        DateTime?
   createdAt         DateTime         @default(now())
 
-  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  oauthTokens       OAuthToken?
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  oauthTokens  OAuthToken?
 
   @@unique([organizationId, provider, externalAccountId])
+  @@index([provider, externalAccountId])
 }
 
 model OAuthToken {
-  id                   String           @id @default(uuid())
-  connectedAccountId   String           @unique
-  accessTokenEncrypted String
+  id                    String           @id @default(uuid())
+  connectedAccountId    String           @unique
+  accessTokenEncrypted  String
   refreshTokenEncrypted String?
-  expiresAt            DateTime?
-  scope                String?
-  updatedAt            DateTime         @updatedAt
+  expiresAt             DateTime?
+  scope                 String?
+  updatedAt             DateTime         @updatedAt
 
-  connectedAccount     ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+}
+
+enum WebhookStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  ERROR
 }
 
 model WebhookEvent {
-  id           String       @id @default(uuid())
-  provider     ProviderName
-  eventId      String       // ID unico del webhook (ej: evt_1234)
-  payload      Json
-  status       String       @default("PENDING") // PENDING, PROCESSED, ERROR
-  error        String?
-  receivedAt   DateTime     @default(now())
-  processedAt  DateTime?
+  id          String        @id @default(uuid())
+  provider    ProviderName
+  eventId     String // ID unico del webhook (ej: evt_1234)
+  payload     Json
+  status      WebhookStatus @default(PENDING)
+  error       String?
+  receivedAt  DateTime      @default(now())
+  processedAt DateTime?
 
   @@unique([provider, eventId])
+  @@index([status, receivedAt])
+}
+
+model EmailLog {
+  id              String   @id @default(uuid())
+  organizationId  String
+  to              String   // email address
+  subject         String
+  template        String   // NEXUS_TRIGGERED, NEXUS_RESOLVED, etc.
+  payload         Json?
+  sentAt          DateTime @default(now())
+  status          String  @default("SENT") // SENT, FAILED
+  error           String?
+
+  @@index([organizationId, sentAt])
 }
 
 // ---------------------------------------------------------
@@ -162,42 +231,51 @@ model Transaction {
   id              String          @id @default(uuid())
   organizationId  String
   sourceProvider  ProviderName
-  sourceId        String          // ej: ch_1234
+  sourceId        String // ej: ch_1234
   type            TransactionType
-  amount          Float
+  amount          Decimal         @db.Decimal(12, 2)
   currency        String
   occurredAt      DateTime
-  
-  customerState   String?         // ej: "CA", "NY"
+
+  customerState   String? // ej: "CA", "NY"
   customerCountry String?
-  
-  category        String?         // Automagic categorization
-  mappedAccountId String?         // Link a QBO Account si aplica
-  
-  rawJson         Json            // Payload original para debug/trazabilidad
-  
-  createdAt       DateTime        @default(now())
 
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  account         Account?        @relation(fields: [mappedAccountId], references: [id], onDelete: SetNull)
+  category        String? // Automagic categorization
+  mappedAccountId String? // Link a QBO Account si aplica
 
+  // Marketplace facilitator logic: si un marketplace recoge y remite el tax,
+  // esta tx NO cuenta para nexus del seller. El Nexus Engine lo excluye.
+  marketplaceFacilitator MarketplaceFacilitator @default(NONE)
+  isFacilitatorCollected Boolean                     @default(false)
+
+  rawJson         Json // Payload original para debug/trazabilidad
+
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account       Account?    @relation(fields: [mappedAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, sourceProvider, sourceId])
   @@index([organizationId, occurredAt])
   @@index([organizationId, customerState])
+  @@index([organizationId, marketplaceFacilitator])
 }
 
 model Payout {
-  id              String       @id @default(uuid())
-  organizationId  String
-  sourceProvider  ProviderName
-  sourceId        String       // ej: po_1234
-  amount          Float
-  currency        String
-  arrivalDate     DateTime
-  status          String
-  rawJson         Json
-  createdAt       DateTime     @default(now())
+  id             String       @id @default(uuid())
+  organizationId String
+  sourceProvider ProviderName
+  sourceId       String // ej: po_1234
+  amount         Decimal       @db.Decimal(12, 2)
+  currency       String
+  arrivalDate    DateTime
+  status         String
+  rawJson        Json
+  createdAt      DateTime     @default(now())
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, sourceProvider, sourceId])
 }
 
 model Expense {
@@ -206,7 +284,7 @@ model Expense {
   sourceProvider  ProviderName
   sourceId        String
   vendorName      String?
-  amount          Float
+  amount          Decimal      @db.Decimal(12, 2)
   currency        String
   occurredAt      DateTime
   category        String?
@@ -214,23 +292,25 @@ model Expense {
   rawJson         Json
   createdAt       DateTime     @default(now())
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  account         Account?     @relation(fields: [mappedAccountId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  account       Account?     @relation(fields: [mappedAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, sourceProvider, sourceId])
 }
 
 model Account {
-  id              String       @id @default(uuid())
-  organizationId  String
-  sourceProvider  ProviderName
-  sourceId        String       // ej: QBO account id
-  name            String
-  type            String
-  classification  String?      // Asset, Liability, Equity, Revenue, Expense
-  createdAt       DateTime     @default(now())
+  id             String       @id @default(uuid())
+  organizationId String
+  sourceProvider ProviderName
+  sourceId       String // ej: QBO account id
+  name           String
+  type           String
+  classification String? // Asset, Liability, Equity, Revenue, Expense
+  createdAt      DateTime     @default(now())
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  transactions    Transaction[]
-  expenses        Expense[]
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  expenses     Expense[]
 
   @@unique([organizationId, sourceProvider, sourceId])
 }
@@ -240,32 +320,32 @@ model Account {
 // ---------------------------------------------------------
 
 model StateRevenueMonthly {
-  id              String       @id @default(uuid())
-  organizationId  String
-  year            Int
-  month           Int
-  state           String       // 2-letra (ej: TX)
-  grossRevenue    Float        @default(0)
-  netRevenue      Float        @default(0)
-  txCount         Int          @default(0)
-  updatedAt       DateTime     @updatedAt
+  id             String   @id @default(uuid())
+  organizationId String
+  year           Int
+  month          Int
+  state          String // 2-letra (ej: TX)
+  grossRevenue   Decimal  @default(0) @db.Decimal(14, 2)
+  netRevenue     Decimal  @default(0) @db.Decimal(14, 2)
+  txCount        Int     @default(0)
+  updatedAt      DateTime @updatedAt
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, year, month, state])
 }
 
 model StateRevenueDaily {
-  id              String       @id @default(uuid())
-  organizationId  String
-  date            DateTime     @db.Date
-  state           String
-  grossRevenue    Float        @default(0)
-  netRevenue      Float        @default(0)
-  txCount         Int          @default(0)
-  updatedAt       DateTime     @updatedAt
+  id            String   @id @default(uuid())
+  organizationId String
+  date          DateTime @db.Date
+  state         String
+  grossRevenue  Decimal  @default(0) @db.Decimal(14, 2)
+  netRevenue    Decimal  @default(0) @db.Decimal(14, 2)
+  txCount       Int     @default(0)
+  updatedAt     DateTime @updatedAt
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, date, state])
 }
@@ -287,74 +367,276 @@ enum FlagStatus {
 }
 
 model NexusFlag {
-  id              String       @id @default(uuid())
-  organizationId  String
-  state           String
-  ruleId          String?
-  severity        Severity     @default(MEDIUM)
-  reason          String
-  firstSeenAt     DateTime     @default(now())
-  lastSeenAt      DateTime     @default(now())
-  status          FlagStatus   @default(OPEN)
+  id            String     @id @default(uuid())
+  organizationId String
+  state         String
+  ruleId        String?
+  severity      Severity   @default(MEDIUM)
+  reason        String
+  firstSeenAt   DateTime   @default(now())
+  lastSeenAt    DateTime   @default(now())
+  status        FlagStatus @default(OPEN)
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  rule            Rule?        @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rule          Rule?        @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([organizationId, state])
 }
 
 model Anomaly {
-  id              String       @id @default(uuid())
-  organizationId  String
-  type            String       // REVENUE_SPIKE, NEGATIVE_NET
-  severity        Severity
-  detectedAt      DateTime     @default(now())
-  details         Json
-  status          FlagStatus   @default(OPEN)
+  id            String     @id @default(uuid())
+  organizationId String
+  type          String // REVENUE_SPIKE, NEGATIVE_NET
+  severity      Severity
+  detectedAt    DateTime   @default(now())
+  details       Json
+  status        FlagStatus @default(OPEN)
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
 }
 
 model Ruleset {
-  id              String       @id @default(uuid())
-  organizationId  String
-  name            String
-  isActive        Boolean      @default(true)
-  createdAt       DateTime     @default(now())
+  id            String   @id @default(uuid())
+  organizationId String
+  name          String
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
 
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  rules           Rule[]
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rules        Rule[]
+
+  @@index([organizationId, isActive])
 }
 
 model Rule {
-  id              String       @id @default(uuid())
-  rulesetId       String
-  type            String       // NEXUS_REVENUE_THRESHOLD, EXPENSE_CAT
-  params          Json         // ej: { "state": "CA", "threshold": 500000 }
-  severity        Severity     @default(MEDIUM)
-  isActive        Boolean      @default(true)
+  id        String   @id @default(uuid())
+  rulesetId String
+  type      String // NEXUS_REVENUE_THRESHOLD, EXPENSE_CAT
+  params    Json // ej: { "state": "CA", "threshold": 500000 }
+  severity  Severity @default(MEDIUM)
+  isActive  Boolean  @default(true)
 
-  ruleset         Ruleset      @relation(fields: [rulesetId], references: [id], onDelete: Cascade)
-  nexusFlags      NexusFlag[]
+  ruleset    Ruleset      @relation(fields: [rulesetId], references: [id], onDelete: Cascade)
+  nexusFlags NexusFlag[]
+
+  @@index([rulesetId, isActive])
 }
 
 // ---------------------------------------------------------
 // 6. REPORTES
 // ---------------------------------------------------------
 
-model Report {
-  id              String       @id @default(uuid())
-  organizationId  String
-  type            String       // MONTHLY_SUMMARY, CPA_EXPORT
-  periodStart     DateTime
-  periodEnd       DateTime
-  status          String       // PENDING, GENERATING, READY, ERROR
-  fileUrl         String?      // S3 path
-  createdAt       DateTime     @default(now())
-
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+enum ReportStatus {
+  PENDING
+  GENERATING
+  READY
+  ERROR
 }
-```
 
-### Reglas clave aplicadas:
-1.  **Aislamiento de Tenant (Multi-Tenant):** Nota que **TODA** entidad de negocio (`Transaction`, `NexusFlag`, `Account`, `Report`) tiene un `organizationId` y está rigurosamente unida con un `@relation(..., onDelete: Cascade)`. Esto asegura que si una Org se elimina, sus datos financieros mueren con ella, evitando fugas de datos huérfanos.
-2.  **Rastreo Crudo (`rawJson`):** Campos críticos guardan el payload JSON original (Stripe/QBO) para auditoría o *backfilling* en caso de un bug en nuestra normalización.
-3.  **Idempotencia:** `WebhookEvent` utiliza un `@@unique([provider, eventId])` a nivel de base de datos para impedir procesar el mismo webhook dos veces, crítico para no duplicar ingresos.
+enum ReportType {
+  MONTHLY_SUMMARY
+  CPA_EXPORT_CSV
+  NEXUS_RISK_PDF
+}
+
+model Report {
+  id            String       @id @default(uuid())
+  organizationId String
+  type          ReportType
+  periodStart   DateTime
+  periodEnd     DateTime
+  status        ReportStatus @default(PENDING)
+  fileUrl       String? // S3 path
+  createdAt     DateTime     @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+}
+
+// ---------------------------------------------------------
+// 7. PRODUCT TAXABILITY MATRIX
+// ¿Es taxable el producto X en el estado Y? Seed data estática
+// derivada de Tax Foundation + state DOR publications. MVP: 5 product
+// types x 50 states. No incluye local jurisdictions (county/city).
+// ---------------------------------------------------------
+
+enum ProductType {
+  SAAS_SUBSCRIPTION   // software-as-a-service recurring
+  DIGITAL_GOOD         // MP3, ebook, downloadable software
+  PHYSICAL_GOOD        // tangible personal property
+  SERVICE              // professional services, consulting
+  MARKETPLACE_FACILITATOR_SALE
+}
+
+model ProductTaxability {
+  id            String       @id @default(uuid())
+  state         String       // 2-letter
+  productType   ProductType
+  taxable       Boolean      @default(false)
+  rate          Decimal      @default(0) @db.Decimal(5, 4) // 0.0625 = 6.25%
+  notes         String?
+  source        String        @default("Tax Foundation 2025")
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([state, productType])
+  @@index([state])
+}
+
+// ---------------------------------------------------------
+// 8. MARKETPLACE FACILITATOR LOGIC
+// ---------------------------------------------------------
+// Cuando un marketplace (Amazon, Etsy, eBay) recoge y remite el tax
+// en nombre del seller, ese revenue NO cuenta para el nexus del seller
+// (el marketplace es el "marketplace facilitator").
+//
+// Schema: extendemos Transaction con `marketplaceFacilitatorId` y un
+// flag `isFacilitatorCollected`. El Nexus Engine ignora estas transacciones
+// al evaluar thresholds.
+
+enum MarketplaceFacilitator {
+  NONE
+  AMAZON
+  ETSY
+  EBAY
+  WALMART
+  SHOPIFY_MARKETPLACE
+  CUSTOM
+}
+
+// ---------------------------------------------------------
+// 9. EXEMPTION CERTIFICATES
+// ---------------------------------------------------------
+// Certificados de exención (resale, manufacturing, non-profit, government).
+// El cliente los sube, el CPA los valida, y se asocian a su customer.
+// Cuando un customer tiene un cert válido, NO se le cobra sales tax.
+
+enum ExemptionType {
+  RESALE
+  MANUFACTURING
+  NONPROFIT
+  GOVERNMENT
+  AGRICULTURAL
+  OTHER
+}
+
+enum ExemptionStatus {
+  PENDING_REVIEW
+  VALID
+  EXPIRED
+  REJECTED
+}
+
+model ExemptionCertificate {
+  id              String           @id @default(uuid())
+  organizationId   String
+  customerEmail    String?          // opcional — si aplica a un customer específico
+  customerName     String?
+  customerState    String           // estado al que aplica la exención
+  exemptionType   ExemptionType
+  certificateNumber String         // ej: "RES-CA-2025-001"
+  issuedAt        DateTime
+  expiresAt       DateTime?
+  fileUrl         String?          // S3/R2 path al PDF subido
+  status          ExemptionStatus  @default(PENDING_REVIEW)
+  reviewedByUserId String?
+  reviewedAt      DateTime?
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([organizationId, customerEmail])
+}
+
+// ---------------------------------------------------------
+// 10. STATE REGISTRATION TRACKING
+// ---------------------------------------------------------
+// Una vez que el Nexus Engine detecta nexus en un estado, el siguiente
+// paso es registrarse con el state DOR. Esta tabla trackea el proceso:
+// NOT_REGISTERED → REGISTERING → REGISTERED → FILING_DUE → FILED
+
+enum RegistrationStatus {
+  NOT_REGISTERED     // no se ha iniciado
+  REGISTERING        // en proceso (formulario en curso)
+  REGISTERED         // ya tenemos tax ID del estado
+  PERMIT_PENDING     // esperando aprobación del state DOR
+  ACTIVE_FILING      // registrado y filing recurrentemente
+  VOLUNTARY_CLOSED   // cerramos voluntarily
+  REVOKED            // el estado nos revocó
+}
+
+model StateRegistration {
+  id              String             @id @default(uuid())
+  organizationId  String
+  state           String
+  status          RegistrationStatus @default(NOT_REGISTERED)
+  stateTaxId      String?            // ej: "SUT-12345678"
+  registeredAt    DateTime?
+  nextFilingDue   DateTime?          // cuando toca el próximo filing
+  filingFrequency String?            // MONTHLY, QUARTERLY, ANNUALLY
+  permitNumber    String?
+  notes           String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, state])
+  @@index([organizationId, status])
+}
+
+// ---------------------------------------------------------
+// 11. VAT / GST GLOBAL TAX
+// ---------------------------------------------------------
+// Para expandir más allá de US. Tracking de VAT/GST registration por país
+// + IOSS para EU (One-Stop-Shop) + OSS (One Stop Shop post-2021).
+// Sellers cross-border deben registrarse en cada país donde cruzan threshold
+// (~€10K para EU OSS, o €100K para country-specific).
+
+enum VatRegimeType {
+  EU_OSS              // One-Stop-Shop for B2C cross-border digital services
+  EU_IOSS             // Import One-Stop-Shop for <€150 imports
+  UK_VAT              // UK post-Brexit
+  AU_GST              // Australia GST on low-value imports
+  NZ_GST              // New Zealand GST on remote services
+  CA_GST_HST          // Canada GST/HST
+  COUNTRY_VAT          // generic per-country VAT
+}
+
+model VatRegistration {
+  id              String         @id @default(uuid())
+  organizationId  String
+  regime          VatRegimeType
+  country         String          @db.VarChar(2) // ISO 3166-1 alpha-2
+  vatNumber       String?         // ej: "FR1234567890", "GB123456789"
+  registeredAt    DateTime?
+  thresholdAmount  Decimal        @default(0) @db.Decimal(14, 2)
+  thresholdCurrency String        @default("EUR")
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, regime, country])
+  @@index([organizationId, regime])
+}
+
+model VatRate {
+  id              String         @id @default(uuid())
+  country         String         @db.VarChar(2)
+  vatRate         Decimal        @db.Decimal(5, 4) // 0.20 = 20%
+  productType     ProductType
+  notes           String?
+  source          String         @default("OECD Tax Database 2025")
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([country, productType])
+  @@index([country])
+}

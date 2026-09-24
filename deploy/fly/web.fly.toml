@@ -1,0 +1,27 @@
+# Fly.io config for AutoTaxFlow Web (Next.js)
+# Deploy: fly deploy --config deploy/fly/web.fly.toml
+primary_region = 'iad'
+
+[build]
+  dockerfile = "apps/web/Dockerfile"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0  # scale to zero when idle (web only)
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  API_URL = "https://autotaxflow-api.fly.dev"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

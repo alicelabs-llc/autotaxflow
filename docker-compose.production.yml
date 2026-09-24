@@ -1,0 +1,122 @@
+# AutoTaxFlow — Production compose
+# Use: docker compose -f docker-compose.production.yml up -d
+#
+# For local dev use docker-compose.yml (only Postgres + Redis).
+# This file builds the 3 app images (api, worker, web) from source
+# and wires them up with the DB + Redis containers.
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: autotaxflow_postgres_prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autotaxflow_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-strong}
+      POSTGRES_DB: ${POSTGRES_DB:-autotaxflow}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autotaxflow_user}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: autotaxflow_redis_prod
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme-strong}
+    volumes:
+      - redis_data_prod:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: autotaxflow_api_prod
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-autotaxflow_user}:${POSTGRES_PASSWORD:-changeme-strong}@postgres:5432/${POSTGRES_DB:-autotaxflow}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme-strong}
+      JWT_SECRET: ${JWT_SECRET}
+      TOKEN_ENC_KEY: ${TOKEN_ENC_KEY}
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_BILLING_WEBHOOK_SECRET: ${STRIPE_BILLING_WEBHOOK_SECRET}
+      STRIPE_PRICE_STARTER: ${STRIPE_PRICE_STARTER:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_BUSINESS: ${STRIPE_PRICE_BUSINESS:-}
+      STRIPE_PRICE_CPA_PARTNER: ${STRIPE_PRICE_CPA_PARTNER:-}
+      QBO_CLIENT_ID: ${QBO_CLIENT_ID:-}
+      QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET:-}
+      QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-sandbox}
+      QBO_REDIRECT_URI: ${QBO_REDIRECT_URI:-}
+      SHOPIFY_API_SECRET: ${SHOPIFY_API_SECRET:-}
+      WOOCOMMERCE_API_SECRET: ${WOOCOMMERCE_API_SECRET:-}
+      BIGCOMMERCE_STORE_HASH: ${BIGCOMMERCE_STORE_HASH:-}
+      BIGCOMMERCE_CLIENT_SECRET: ${BIGCOMMERCE_CLIENT_SECRET:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-alerts@autotaxflow.dev}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-AutoTaxFlow Alerts}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    ports:
+      - '3001:3001'
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: autotaxflow_worker_prod
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-autotaxflow_user}:${POSTGRES_PASSWORD:-changeme-strong}@postgres:5432/${POSTGRES_DB:-autotaxflow}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme-strong}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-alerts@autotaxflow.dev}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-AutoTaxFlow Alerts}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: autotaxflow_web_prod
+    restart: always
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:3001
+    ports:
+      - '3000:3000'
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:

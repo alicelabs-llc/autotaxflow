@@ -35,3 +35,7 @@ docker-volume/
 # Vercel/Turbo
 .turbo/
 .vercel
+packages/*/dist/
+apps/*/dist/
+**/*.d.ts
+**/*.js.map

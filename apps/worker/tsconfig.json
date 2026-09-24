@@ -2,7 +2,9 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "composite": false
+    "rootDir": "./src",
+    "composite": false,
+    "paths": {}  // Override root tsconfig — let packages resolve via node_modules
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]

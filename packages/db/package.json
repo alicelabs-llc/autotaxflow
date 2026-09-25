@@ -9,11 +9,11 @@
     "dev": "tsc -p tsconfig.json --watch"
   },
   "dependencies": {
-    "@prisma/client": "5.16.0"
-  },
-  "devDependencies": {
+    "@prisma/client": "5.16.0",
     "prisma": "5.16.0",
     "typescript": "5.4.5"
+  },
+  "devDependencies": {
   },
   "prisma": {
     "schema": "prisma/schema.prisma"

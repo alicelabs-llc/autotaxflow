@@ -18,13 +18,15 @@
     "stripe": "15.12.0",
     "pdfkit": "0.15.0",
     "resend": "2.1.0",
-    "dotenv": "16.4.5"
-  },
-  "devDependencies": {
+    "dotenv": "16.4.5",
     "@types/node": "20.14.0",
     "@types/pdfkit": "0.13.4",
     "ts-node-dev": "2.0.0",
     "typescript": "5.4.5",
+    "prisma": "5.16.0",
+    "@prisma/client": "5.16.0"
+  },
+  "devDependencies": {
     "vitest": "1.6.0"
   }
 }

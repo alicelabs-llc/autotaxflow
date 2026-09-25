@@ -112,7 +112,7 @@ bootstrap().catch((err) => {
     },
   }, null, 2);
   const port = Number(process.env.PORT) || 3001;
-  http.createServer((req, res) => {
+  http.createServer((req: any, res: any) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(payload);
   }).listen(port, '0.0.0.0', () => {

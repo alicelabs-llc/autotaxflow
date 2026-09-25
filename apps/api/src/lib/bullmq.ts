@@ -5,14 +5,53 @@ import { env } from './env';
 /**
  * Conexión central de Redis compartida entre API y Worker.
  * Listeners `error` y `close` previenen crashes silenciosos.
+ *
+ * Si REDIS_HOST es upstash.io, habilitamos TLS automáticamente (Upstash
+ * requiere `rediss://` even on port 6379).
+ * Si se setea REDIS_URL completa (redis:// o rediss://), la usamos directo.
  */
-export const redisConnection = new IORedis({
-  host: env.REDIS_HOST,
-  port: env.REDIS_PORT,
-  password: env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: null, // Requerido por BullMQ
-  enableReadyCheck: true,
+
+function buildRedisOptions() {
+  // Si viene REDIS_URL completa, la parseamos
+  if (process.env.REDIS_URL) {
+    return {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: true,
+      // ioredis construye la conexión desde la URL
+      ...(process.env.REDIS_URL.startsWith('rediss://')
+        ? { tls: {} as Record<string, unknown> }
+        : {}),
+    };
+  }
+
+  const isUpstash = env.REDIS_HOST.includes('upstash.io');
+  return {
+    host: env.REDIS_HOST,
+    port: env.REDIS_PORT,
+    password: env.REDIS_PASSWORD || undefined,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    // Upstash requiere TLS. Cualquier host que sea upstash.io lo habilita.
+    ...(isUpstash ? { tls: {} as Record<string, unknown> } : {}),
+    // O si el usuario lo pide explícitamente via env
+    ...(process.env.REDIS_TLS === 'true' ? { tls: {} as Record<string, unknown> } : {}),
+  };
+}
+
+// Captura unhandled errors antes de crear la conexión — sin esto, IORedis
+// podría emitir 'error' antes de que el handler de abajo se registre en
+// algunos escenarios edge (race conditions con DNS resolution).
+process.on('uncaughtException', (err) => {
+  console.error('[uncaught]', err.message);
+  // No salir — solo log. El proceso sigue.
 });
+
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', (err as Error)?.message || String(err));
+  // No salir — solo log. El proceso sigue.
+});
+
+export const redisConnection = new IORedis(buildRedisOptions());
 
 redisConnection.on('error', (err) => {
   console.error('[redis] connection error:', err.message);

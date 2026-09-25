@@ -105,7 +105,47 @@ bootstrap().catch((err) => {
   try {
     fastify.log.error(err, 'Fatal boot error');
   } catch {}
-  process.exit(1);
+
+  // Instead of exiting immediately, start an HTTP server that exposes the
+  // error JSON at the root URL. This lets us curl the deployed API to see
+  // the exact error without needing dashboard access.
+  const http = require('http');
+  const errorPayload = JSON.stringify({
+    status: 'BOOT_ERROR',
+    message: err?.message || String(err),
+    stack: err?.stack,
+    code: err?.code,
+    cause: err?.cause?.message ? String(err.cause.message) : undefined,
+    time: new Date().toISOString(),
+    node: process.version,
+    pid: process.pid,
+    cwd: process.cwd(),
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      PORT: process.env.PORT,
+      REDIS_HOST: process.env.REDIS_HOST,
+      REDIS_PORT: process.env.REDIS_PORT,
+      REDIS_PASSWORD_SET: !!process.env.REDIS_PASSWORD,
+      DATABASE_URL_SET: !!process.env.DATABASE_URL,
+      JWT_SECRET_SET: !!process.env.JWT_SECRET,
+      JWT_SECRET_LEN: process.env.JWT_SECRET?.length,
+      TOKEN_ENC_KEY_SET: !!process.env.TOKEN_ENC_KEY,
+      TOKEN_ENC_KEY_LEN: process.env.TOKEN_ENC_KEY?.length,
+      WEB_ORIGIN: process.env.WEB_ORIGIN,
+      NODE_VERSION: process.env.NODE_VERSION,
+    },
+  }, null, 2);
+
+  const port = Number(process.env.PORT) || 3001;
+  http
+    .createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(errorPayload);
+    })
+    .listen(port, '0.0.0.0', () => {
+      console.error(`>>> Error exposure server listening on port ${port}`);
+      console.error(`>>> curl https://autotaxflow-api.onrender.com/ to see the error`);
+    });
 });
 
 // Catch any unhandled promise rejections (e.g. from lib/bullmq module load)

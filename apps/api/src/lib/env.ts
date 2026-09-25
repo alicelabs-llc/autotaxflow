@@ -29,10 +29,10 @@ const EnvSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/, 'TOKEN_ENC_KEY must be 32-byte hex (64 chars)'),
   WEB_ORIGIN: z.string().default('https://atf.alicelabs.site'),
 
-  STRIPE_SECRET_KEY: z.string().startsWith('sk_').or(z.literal('')),
-  STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').or(z.literal('')),
+  STRIPE_SECRET_KEY: z.string().startsWith('sk_').or(z.literal('')).optional().default(''),
+  STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').or(z.literal('')).optional().default(''),
   STRIPE_CLIENT_ID: z.string().optional().default(''),
-  STRIPE_BILLING_WEBHOOK_SECRET: z.string().startsWith('whsec_').or(z.literal('')),
+  STRIPE_BILLING_WEBHOOK_SECRET: z.string().startsWith('whsec_').or(z.literal('')).optional().default(''),
   STRIPE_PRICE_STARTER: z.string().optional().default(''),
   STRIPE_PRICE_PRO: z.string().optional().default(''),
   STRIPE_PRICE_BUSINESS: z.string().optional().default(''),

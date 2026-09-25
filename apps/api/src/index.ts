@@ -93,6 +93,29 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
 bootstrap().catch((err) => {
-  fastify.log.error(err, 'Fatal boot error');
-  process.exit(1);
+  console.error('=== FATAL BOOT ERROR ===');
+  console.error('Message:', err?.message || String(err));
+  console.error('Stack:', err?.stack || '<no stack>');
+  console.error('=== END ===');
+
+  // Start error-exposure HTTP server instead of exiting
+  const http = require('http');
+  const payload = JSON.stringify({
+    status: 'BOOT_ERROR',
+    message: err?.message || String(err),
+    stack: err?.stack,
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      REDIS_HOST: process.env.REDIS_HOST,
+      DATABASE_URL_SET: !!process.env.DATABASE_URL,
+      JWT_SECRET_SET: !!process.env.JWT_SECRET,
+    },
+  }, null, 2);
+  const port = Number(process.env.PORT) || 3001;
+  http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(payload);
+  }).listen(port, '0.0.0.0', () => {
+    console.error(`>>> Error server on ${port}`);
+  });
 });

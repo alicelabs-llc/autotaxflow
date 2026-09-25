@@ -149,11 +149,23 @@ async function main() {
   // All good — start the API
   LOG('All build steps succeeded. Starting API...');
 
-  // Use child_process.spawn to start the API and keep this process alive
+  // Use child_process.spawn to start the API and capture output
   const { spawn } = require('child_process');
   const api = spawn('node', [distPath], {
-    stdio: 'inherit',
+    stdio: ['inherit', 'pipe', 'pipe'],
     env: process.env,
+  });
+
+  let childOutput = [];
+  api.stdout.on('data', (data) => {
+    const s = data.toString();
+    childOutput.push(s);
+    process.stdout.write(s);
+  });
+  api.stderr.on('data', (data) => {
+    const s = data.toString();
+    childOutput.push(s);
+    process.stderr.write(s);
   });
 
   api.on('exit', (code, signal) => {
@@ -164,6 +176,7 @@ async function main() {
       message: `API process exited with code ${code} signal ${signal}`,
       exitCode: code,
       signal,
+      output: childOutput.join('').slice(-3000),
     });
   });
 

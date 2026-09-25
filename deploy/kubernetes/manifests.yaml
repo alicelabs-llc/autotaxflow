@@ -1,0 +1,363 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: autotaxflow
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autotaxflow-api
+  namespace: autotaxflow
+  labels:
+    app: autotaxflow
+    component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: autotaxflow
+      component: api
+  template:
+    metadata:
+      labels:
+        app: autotaxflow
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/alicelabs-llc/autotaxflow-api:latest
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: database-url
+            - name: REDIS_HOST
+              value: redis-service
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: redis-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: jwt-secret
+            - name: TOKEN_ENC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: token-enc-key
+            - name: WEB_ORIGIN
+              value: https://app.autotaxflow.dev
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autotaxflow-api-service
+  namespace: autotaxflow
+spec:
+  selector:
+    app: autotaxflow
+    component: api
+  ports:
+    - port: 80
+      targetPort: 3001
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autotaxflow-worker
+  namespace: autotaxflow
+  labels:
+    app: autotaxflow
+    component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autotaxflow
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: autotaxflow
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/alicelabs-llc/autotaxflow-worker:latest
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: database-url
+            - name: REDIS_HOST
+              value: redis-service
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: redis-password
+            - name: TOKEN_ENC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: token-enc-key
+            - name: QBO_ENVIRONMENT
+              value: production
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autotaxflow-web
+  namespace: autotaxflow
+  labels:
+    app: autotaxflow
+    component: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: autotaxflow
+      component: web
+  template:
+    metadata:
+      labels:
+        app: autotaxflow
+        component: web
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/alicelabs-llc/autotaxflow-web:latest
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: API_URL
+              value: http://autotaxflow-api-service
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autotaxflow-web-service
+  namespace: autotaxflow
+spec:
+  selector:
+    app: autotaxflow
+    component: web
+  ports:
+    - port: 80
+      targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: autotaxflow
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: autotaxflow_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: autotaxflow
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: autotaxflow
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: autotaxflow
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          args: ["redis-server", "--appendonly", "yes", "--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: autotaxflow-secrets
+                  key: redis-password
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: autotaxflow
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: autotaxflow-web-ingress
+  namespace: autotaxflow
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+    - hosts:
+        - app.autotaxflow.dev
+      secretName: autotaxflow-web-tls
+  rules:
+    - host: app.autotaxflow.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: autotaxflow-web-service
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: autotaxflow-api-ingress
+  namespace: autotaxflow
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  tls:
+    - hosts:
+        - api.autotaxflow.dev
+      secretName: autotaxflow-api-tls
+  rules:
+    - host: api.autotaxflow.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: autotaxflow-api-service
+                port:
+                  number: 80

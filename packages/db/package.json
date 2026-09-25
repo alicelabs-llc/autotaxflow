@@ -1,13 +1,19 @@
 {
   "name": "@autotaxflow/db",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "private": true,
-  "main": "./index.ts",
-  "types": "./index.ts",
-  "dependencies": {
-    "@prisma/client": "latest"
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch"
   },
-  "devDependencies": {
-    "prisma": "latest"
+  "dependencies": {
+    "@prisma/client": "5.16.0",
+    "prisma": "5.16.0",
+    "typescript": "5.4.5"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
   }
 }

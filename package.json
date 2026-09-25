@@ -1,18 +1,37 @@
 {
   "name": "autotaxflow",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "private": true,
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev": "turbo run dev",
+    "dev": "turbo run dev --parallel",
     "build": "turbo run build",
     "lint": "turbo run lint",
-    "clean": "rm -rf .turbo && rm -rf node_modules && rm -rf dist"
+    "test": "turbo run test",
+    "clean": "rm -rf .turbo && rm -rf node_modules && rm -rf */**/dist && rm -rf */**/.turbo",
+    "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:push": "prisma db push --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema packages/db/prisma/schema.prisma",
+    "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
   },
   "devDependencies": {
-    "turbo": "latest"
+    "turbo": "2.0.6",
+    "typescript": "5.4.5",
+    "prettier": "3.3.2",
+    "@types/node": "20.14.0",
+    "vitest": "1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "overrides": {
+    "fast-jwt": "^6.3.3",
+    "uuid": "^11.0.0",
+    "esbuild": "^0.25.0",
+    "@fastify/static": "^7.0.0"
   }
 }

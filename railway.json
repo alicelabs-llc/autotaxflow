@@ -1,0 +1,86 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "services": [
+    {
+      "name": "api",
+      "source": {
+        "dockerfile": {
+          "dockerfilePath": "apps/api/Dockerfile"
+        }
+      },
+      "variables": {
+        "NODE_ENV": "production",
+        "PORT": "3001"
+      },
+      "healthcheckPath": "/health",
+      "healthcheckTimeout": 30,
+      "deploy": {
+        "startCommand": "node apps/api/dist/index.js",
+        "restartPolicyType": "ON_FAILURE",
+        "restartMaxRetries": 3
+      },
+      "resources": {
+        "cpu": 1,
+        "memory": "512MB"
+      }
+    },
+    {
+      "name": "worker",
+      "source": {
+        "dockerfile": {
+          "dockerfilePath": "apps/worker/Dockerfile"
+        }
+      },
+      "variables": {
+        "NODE_ENV": "production"
+      },
+      "deploy": {
+        "startCommand": "node apps/worker/dist/index.js",
+        "restartPolicyType": "ON_FAILURE",
+        "restartMaxRetries": 3
+      },
+      "resources": {
+        "cpu": 1,
+        "memory": "512MB"
+      }
+    },
+    {
+      "name": "web",
+      "source": {
+        "dockerfile": {
+          "dockerfilePath": "apps/web/Dockerfile"
+        }
+      },
+      "variables": {
+        "NODE_ENV": "production",
+        "PORT": "3000"
+      },
+      "deploy": {
+        "startCommand": "cd apps/web && npx next start",
+        "restartPolicyType": "ON_FAILURE",
+        "restartMaxRetries": 3
+      },
+      "resources": {
+        "cpu": 1,
+        "memory": "256MB"
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "postgres-data",
+      "mountPath": "/var/lib/postgresql/data",
+      "sizeGB": 10
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "image": "postgres:15-alpine"
+    },
+    {
+      "name": "redis",
+      "image": "redis:7-alpine"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# Fly.io config for AutoTaxFlow Worker
+# Deploy: fly deploy --config deploy/fly/worker.fly.toml
+primary_region = 'iad'
+
+[build]
+  dockerfile = "apps/worker/Dockerfile"
+
+# Worker is NOT a service — it's a long-running process.
+# Fly scales it via `fly scale count N` not via HTTP traffic.
+[experimental]
+  auto_stop_machines = false
+  auto_start_machines = false
+
+[env]
+  NODE_ENV = "production"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Same secrets as the API — both need access to the same DB, Redis, and
+# TOKEN_ENC_KEY (for decrypting QBO OAuth tokens on the worker side).

@@ -9,6 +9,9 @@
   "scripts": {
     "dev": "turbo run dev --parallel",
     "build": "turbo run build",
+    "build:render:api": "npm run build:packages && npm run db:generate && tsc -p apps/api/tsconfig.json",
+    "build:render:worker": "npm run build:packages && npm run db:generate && tsc -p apps/worker/tsconfig.json",
+    "build:packages": "tsc -p packages/shared/tsconfig.json && tsc -p packages/db/tsconfig.json",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "clean": "rm -rf .turbo && rm -rf node_modules && rm -rf */**/dist && rm -rf */**/.turbo",

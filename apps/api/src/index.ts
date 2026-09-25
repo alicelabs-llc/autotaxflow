@@ -93,6 +93,35 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
 bootstrap().catch((err) => {
-  fastify.log.error(err, 'Fatal boot error');
+  // Use console.error (synchronous) instead of fastify.log (async pino)
+  // so the error is guaranteed to be flushed before process.exit(1).
+  // Otherwise on Render Free the log might be lost when the process exits.
+  console.error('=== FATAL BOOT ERROR ===');
+  console.error('Message:', err?.message || String(err));
+  console.error('Stack:', err?.stack || '<no stack>');
+  console.error('Cause:', err?.cause);
+  console.error('Code:', err?.code);
+  console.error('=== END ERROR ===');
+  try {
+    fastify.log.error(err, 'Fatal boot error');
+  } catch {}
   process.exit(1);
+});
+
+// Catch any unhandled promise rejections (e.g. from lib/bullmq module load)
+process.on('unhandledRejection', (err) => {
+  console.error('=== UNHANDLED REJECTION ===');
+  console.error('Message:', (err as Error)?.message || String(err));
+  console.error('Stack:', (err as Error)?.stack || '<no stack>');
+  console.error('=== END ===');
+});
+
+// Catch any uncaught exception (last resort)
+process.on('uncaughtException', (err) => {
+  console.error('=== UNCAUGHT EXCEPTION ===');
+  console.error('Message:', err?.message || String(err));
+  console.error('Stack:', err?.stack || '<no stack>');
+  console.error('=== END ===');
+  // Don't exit immediately — let the logs flush
+  setTimeout(() => process.exit(1), 100);
 });
